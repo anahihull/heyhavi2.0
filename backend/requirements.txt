@@ -1,9 +1,10 @@
 fastapi==0.111.0
 uvicorn==0.29.0
-scikit-learn==1.4.2
+scikit-learn==1.6.1
 pandas==2.2.2
 numpy==1.26.4
 joblib==1.4.2
 pydantic==2.7.1
 python-dotenv==1.0.1
+anthropic==0.34.2
 # coremltools==7.2  # Mac only — uncomment if you need to export the model

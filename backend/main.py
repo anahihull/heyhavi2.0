@@ -1,17 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Literal
 import uvicorn
 
-from model_loader import predict_intent, predict_intent_proba
+from model_loader import predict_full
 from risk import assess_risk, Transaction, RiskResult
 from responder import generate_response
+from conversation import converse, LLM_ENABLED_ACTIONS
 
 app = FastAPI(
     title="Smart Financial Assistant API",
-    description="NLP intent classification + rule-based risk detection",
-    version="1.0.0"
+    description="Spanish NLP: intent + sentiment + action + risk",
+    version="2.0.0"
 )
 
 # Allow iOS app and local dev tools to call this API freely
@@ -40,10 +41,35 @@ class ChatResponse(BaseModel):
     message: str
     intent: str
     intent_confidence: float
+    sentiment: str
+    sentiment_confidence: float
+    action: str
+    escalate: bool
     risk_level: str
     risk_score: int
     risk_flags: list[str]
     response: str
+    response_hint: str
+
+
+# ── Conversation (multi-turn LLM) models ─────────────────────────────────────
+
+class ConverseTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+class ConverseRequest(BaseModel):
+    user_id: str
+    action: str
+    message: str
+    history: list[ConverseTurn] = []
+
+class ConverseResponse(BaseModel):
+    user_id: str
+    action: str
+    message: str
+    resolved: bool
+    escalate: bool
 
 
 # ── Mock user profile store (replace with real DB in production) ──────────────
@@ -92,36 +118,55 @@ def list_intents():
     """List all supported intents."""
     return {
         "intents": [
-            "check_balance",
-            "transfer_money",
-            "fraud_alert",
-            "product_inquiry",
-            "customer_support",
-            "transaction_history",
-        ]
+            "consulta_saldo",
+            "transferencia",
+            "cancelar_cuenta",
+            "cancelar_cargo",
+            "bloqueo_tarjeta",
+            "fraude_cargo_no_reconocido",
+            "solicitar_producto",
+            "problema_tecnico",
+            "queja_servicio",
+            "hablar_asesor",
+            "cambio_datos_perfil",
+            "informacion_general",
+        ],
+        "sentiments": ["positivo", "neutral", "negativo_queja", "negativo_urgente"],
+        "actions": [
+            "retener_cliente_urgente",
+            "retener_cliente",
+            "escalar_agente",
+            "resolver_problema",
+            "procesar_solicitud",
+            "informar",
+            "oferta_producto",
+        ],
     }
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     """
-    Main endpoint: takes a user message and returns intent + risk + response.
+    Main endpoint: takes a Spanish customer message and returns
+    intent + sentiment + action + risk + response.
 
     Example body:
     {
         "user_id": "user_001",
-        "message": "I see a charge I don't recognize",
-        "transaction_amount": 8500,
-        "failed_attempts": 3,
-        "is_anomaly": true,
-        "transaction_country": "US"
+        "message": "Quiero cancelar mi cuenta, estoy muy decepcionado del servicio"
     }
     """
-    # 1. Classify intent using the ML model
-    intent = predict_intent(req.message)
-    proba  = predict_intent_proba(req.message)
-    confidence = proba.get(intent, 0.0)
+    # 1. Classify intent + sentiment → action
+    prediction = predict_full(req.message)
+    intent    = prediction["intent"]
+    sentiment = prediction["sentiment"]
+    action    = prediction["action"]
 
-    print(f"[{req.user_id}] '{req.message}' → intent={intent} ({confidence:.2f})")
+    print(
+        f"[{req.user_id}] '{req.message[:60]}' → "
+        f"intent={intent}({prediction['intent_conf']:.2f}) "
+        f"sentiment={sentiment}({prediction['sentiment_conf']:.2f}) "
+        f"action={action}"
+    )
 
     # 2. Load user profile
     user_profile = get_user_profile(req.user_id)
@@ -139,18 +184,80 @@ def chat(req: ChatRequest):
 
     print(f"  risk={risk.level} (score={risk.score}) flags={risk.flags}")
 
-    # 4. Generate human-like response
-    response_text = generate_response(intent, risk.level, risk.flags)
+    # 4. Generate Spanish response based on action
+    resp = generate_response(action, intent, sentiment, risk.flags)
 
     return ChatResponse(
         user_id=req.user_id,
         message=req.message,
         intent=intent,
-        intent_confidence=round(confidence, 3),
+        intent_confidence=prediction["intent_conf"],
+        sentiment=sentiment,
+        sentiment_confidence=prediction["sentiment_conf"],
+        action=action,
+        escalate=resp["escalate"],
         risk_level=risk.level,
         risk_score=risk.score,
         risk_flags=risk.flags,
-        response=response_text,
+        response=resp["message"],
+        response_hint=resp["hint"],
+    )
+
+
+@app.post("/converse", response_model=ConverseResponse)
+def converse_endpoint(req: ConverseRequest):
+    """
+    Multi-turn LLM conversation endpoint.
+
+    The iOS app drops into this mode after the on-device classifier picks an
+    action that benefits from a real conversation (retention, escalation,
+    troubleshooting, etc.). The client sends:
+
+        - action: the action context selected by the on-device classifier
+        - message: the latest user turn (Spanish)
+        - history: previous {role, content} pairs in this conversation
+
+    The server replies with the assistant message plus two control flags:
+
+        - resolved: true when the conversation has reached a natural close.
+                    The client should then leave conversation mode and return
+                    to neutral classification.
+        - escalate: true when a human agent should take over.
+    """
+    if req.action not in LLM_ENABLED_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Action '{req.action}' is not enabled for LLM conversation. "
+                f"Supported: {sorted(LLM_ENABLED_ACTIONS)}"
+            ),
+        )
+
+    history = [{"role": t.role, "content": t.content} for t in req.history]
+
+    try:
+        result = converse(
+            action=req.action,
+            history=history,
+            user_message=req.message,
+        )
+    except RuntimeError as e:
+        # Most likely missing ANTHROPIC_API_KEY
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"LLM error: {e}")
+
+    print(
+        f"[{req.user_id}] /converse action={req.action} "
+        f"resolved={result['resolved']} escalate={result['escalate']}"
+    )
+
+    return ConverseResponse(
+        user_id=req.user_id,
+        action=req.action,
+        message=result["message"],
+        resolved=result["resolved"],
+        escalate=result["escalate"],
     )
 
 

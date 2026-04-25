@@ -1,105 +1,191 @@
+"""
+Response generator for the Smart Financial Assistant.
+
+The pipeline upstream (model_loader.predict_full) decides three things from
+the user's message:
+    intent      → e.g. "fraude_cargo_no_reconocido"
+    sentiment   → e.g. "negativo_urgente"
+    action      → mapped from (intent, sentiment) via ml/action_map.json,
+                  e.g. "escalar_agente"
+
+This module turns those three labels (plus any risk flags) into a single
+Spanish reply ready for the iOS app:
+
+    {
+        "message":  "Lamento lo que está ocurriendo...",
+        "escalate": True,
+        "hint":     "Vamos a revisar ese cargo de inmediato y proteger tu cuenta.",
+    }
+"""
+
 from typing import Optional
 
-# Response matrix keyed on (intent, risk_level)
-RESPONSES: dict[tuple[str, str], str] = {
-    # ── check_balance ─────────────────────────────────────────────────────────
-    ("check_balance", "low"):
-        "Your current balance is $4,823.50. Everything looks normal — no unusual activity detected.",
-    ("check_balance", "medium"):
-        "Your balance is $4,823.50. We noticed some unusual activity on your account. "
-        "Please review your recent transactions.",
-    ("check_balance", "high"):
-        "Your balance is $4,823.50. ⚠️ We've detected high-risk activity on your account. "
-        "Please contact support immediately or visit your nearest branch.",
 
-    # ── transfer_money ────────────────────────────────────────────────────────
-    ("transfer_money", "low"):
-        "Your transfer has been initiated successfully. It should arrive within 1–2 business days.",
-    ("transfer_money", "medium"):
-        "We're processing your transfer, but it has been flagged for a quick review. "
-        "You'll receive a confirmation within 30 minutes.",
-    ("transfer_money", "high"):
-        "⚠️ Your transfer has been temporarily held due to unusual activity. "
-        "Please verify your identity to proceed.",
+# ── Action templates ─────────────────────────────────────────────────────────
+# These keys match the action set produced by ml/action_map.json.
+# Each action has a base Spanish message and a default "escalate to human"
+# preference.
 
-    # ── fraud_alert ───────────────────────────────────────────────────────────
-    ("fraud_alert", "low"):
-        "We reviewed the transaction you mentioned and it appears normal. "
-        "If you still have concerns, please don't hesitate to contact us.",
-    ("fraud_alert", "medium"):
-        "We're investigating the flagged transaction on your behalf. "
-        "You'll receive an update within 24 hours. No action needed from you right now.",
-    ("fraud_alert", "high"):
-        "🚨 We've detected potentially fraudulent activity on your account. "
-        "Your card has been temporarily blocked as a precaution. "
-        "Please call 1-800-SECURE now to verify your identity.",
-
-    # ── product_inquiry ───────────────────────────────────────────────────────
-    ("product_inquiry", "low"):
-        "We offer a range of products: savings accounts, credit cards with cashback, "
-        "and investment portfolios. Would you like details on any specific product?",
-    ("product_inquiry", "medium"):
-        "We have excellent financial products available! Based on your profile, "
-        "our Premium Savings Account may be a great fit. "
-        "Note: there is a pending review on your account — we'll resolve it shortly.",
-    ("product_inquiry", "high"):
-        "We'd love to help you explore our products. However, please resolve the "
-        "active security alert on your account first. "
-        "Call 1-800-SECURE and we'll get you set up right after.",
-
-    # ── customer_support ──────────────────────────────────────────────────────
-    ("customer_support", "low"):
-        "I'm here to help! What do you need assistance with today? "
-        "You can also reach our support team 24/7 at 1-800-FINHELP.",
-    ("customer_support", "medium"):
-        "I'll connect you with a support agent right away. "
-        "Please note: there's a pending review on your account that the agent will also address.",
-    ("customer_support", "high"):
-        "A security specialist will contact you within the next 10 minutes "
-        "regarding the urgent alert on your account. Please stay available.",
-
-    # ── transaction_history ───────────────────────────────────────────────────
-    ("transaction_history", "low"):
-        "Here are your last 5 transactions:\n"
-        "  • Amazon       — $45.00\n"
-        "  • Starbucks    — $6.50\n"
-        "  • Uber         — $12.30\n"
-        "  • Netflix      — $15.99\n"
-        "  • Walmart      — $89.40",
-    ("transaction_history", "medium"):
-        "Here are your recent transactions. One item is under review:\n"
-        "  • Amazon       — $45.00\n"
-        "  • Starbucks    — $6.50\n"
-        "  • [Under Review: Unknown Merchant — $1,200.00] ⚠️\n"
-        "  • Netflix      — $15.99\n"
-        "  • Walmart      — $89.40",
-    ("transaction_history", "high"):
-        "⚠️ Your transaction history shows suspicious activity. "
-        "Full account access has been temporarily limited. "
-        "Please call 1-800-SECURE to verify your identity and restore access.",
+ACTION_RESPONSES: dict[str, dict] = {
+    "retener_cliente_urgente": {
+        "message": (
+            "Lamento mucho que te sientas así y entiendo perfectamente tu frustración. "
+            "Es muy importante para nosotros que te quedes con nosotros. "
+            "Antes de tomar cualquier decisión, me gustaría ofrecerte una solución personalizada "
+            "y comunicarte de inmediato con un especialista que puede ayudarte. ¿Me permites un momento?"
+        ),
+        "escalate": True,
+    },
+    "retener_cliente": {
+        "message": (
+            "Entiendo que estás considerando cerrar tu cuenta y queremos asegurarnos "
+            "de que tu experiencia mejore. ¿Podrías contarme qué ha pasado? "
+            "Estamos aquí para resolver cualquier inconveniente y encontrar la mejor solución para ti. "
+            "Tenemos opciones que podrían ser de tu interés."
+        ),
+        "escalate": False,
+    },
+    "escalar_agente": {
+        "message": (
+            "Entiendo la importancia de tu situación. Voy a conectarte ahora mismo "
+            "con un especialista del equipo de Hey Banco que podrá atenderte de forma personalizada. "
+            "Por favor, mantente en la conversación."
+        ),
+        "escalate": True,
+    },
+    "resolver_problema": {
+        "message": (
+            "Lamento que estés teniendo este inconveniente. Voy a ayudarte a resolverlo ahora mismo. "
+            "¿Puedes darme más detalles sobre lo que está ocurriendo para darte la solución más precisa?"
+        ),
+        "escalate": False,
+    },
+    "procesar_solicitud": {
+        "message": (
+            "Con gusto proceso tu solicitud. Dame un momento para verificar tu información "
+            "y llevarla a cabo de forma segura."
+        ),
+        "escalate": False,
+    },
+    "informar": {
+        "message": (
+            "Claro, con mucho gusto te ayudo. ¿En qué puedo orientarte hoy? "
+            "Estoy aquí para responder todas tus preguntas sobre Hey Banco."
+        ),
+        "escalate": False,
+    },
+    "oferta_producto": {
+        "message": (
+            "¡Excelente! En Hey Banco tenemos productos diseñados para ti: "
+            "tarjetas de crédito con cashback, préstamos personales con tasas competitivas, "
+            "y cuentas con beneficios exclusivos. ¿Te gustaría conocer cuál se adapta mejor a tus necesidades?"
+        ),
+        "escalate": False,
+    },
 }
 
-DEFAULT_RESPONSE = (
-    "I'm sorry, I didn't fully understand that. "
-    "Could you rephrase your question? "
-    "You can also call us at 1-800-FINHELP for immediate assistance."
-)
+
+# ── Intent-specific warm hints (appended after the action message) ───────────
+
+INTENT_HINTS: dict[str, str] = {
+    "cancelar_cuenta":             "Si decides quedarte, tenemos beneficios exclusivos que pueden mejorar tu experiencia.",
+    "fraude_cargo_no_reconocido":  "Vamos a revisar ese cargo de inmediato y proteger tu cuenta.",
+    "bloqueo_tarjeta":             "Procederemos a bloquear tu tarjeta de forma inmediata para protegerte.",
+    "transferencia":               "Tu transferencia se realizará de forma segura.",
+    "solicitar_producto":          "Tenemos opciones ideales para tu perfil financiero.",
+    "problema_tecnico":            "Revisaremos el problema técnico contigo paso a paso.",
+    "queja_servicio":              "Tu retroalimentación es muy valiosa y nos ayuda a mejorar.",
+    "hablar_asesor":               "Un asesor estará contigo en breve.",
+    "consulta_saldo":              "Aquí tienes la información de tu cuenta.",
+    "cambio_datos_perfil":         "Actualizaremos tus datos de forma segura.",
+    "informacion_general":         "Con gusto te oriento.",
+    "cancelar_cargo":              "Revisaremos ese cargo y tomaremos las medidas necesarias.",
+}
+
+
+# ── Sentiment-driven empathy prefix ──────────────────────────────────────────
+# A tiny opener that softens the message when the customer is upset.
+
+SENTIMENT_OPENERS: dict[str, str] = {
+    "negativo_urgente": "Entiendo que esto es urgente. ",
+    "negativo_queja":   "Lamento mucho lo que estás viviendo. ",
+    "neutral":          "",
+    "positivo":         "",
+}
+
+
+# Risk-flag keywords that should force a human handoff regardless of action.
+# (These match the kinds of strings risk.assess_risk emits.)
+ESCALATE_FLAG_KEYWORDS = ("fraud", "anomal", "foreign", "5x above")
 
 
 def generate_response(
+    action: str,
     intent: str,
-    risk_level: str,
-    flags: Optional[list] = None
-) -> str:
+    sentiment: str,
+    risk_flags: Optional[list[str]] = None,
+) -> dict:
     """
-    Map (intent, risk_level) to a human-like response.
-    Appends the top risk flag as a reason for medium/high alerts.
+    Build the assistant's reply.
+
+    Parameters
+    ----------
+    action : str
+        Action chosen by the action_map (e.g. "escalar_agente").
+    intent : str
+        Predicted intent label (e.g. "fraude_cargo_no_reconocido").
+    sentiment : str
+        Predicted sentiment label (e.g. "negativo_urgente").
+    risk_flags : list[str] | None
+        Human-readable risk reasons from risk.assess_risk.
+
+    Returns
+    -------
+    dict with keys:
+        message  : final Spanish text to show the user
+        escalate : whether to route to a human agent
+        hint     : intent-specific sub-message (also included in `message`)
     """
-    response = RESPONSES.get((intent, risk_level), DEFAULT_RESPONSE)
+    risk_flags = risk_flags or []
 
-    # Append the top risk flag for context on medium/high alerts
-    if flags and risk_level in ("medium", "high"):
-        top_flag = flags[0]
-        response += f"\n\n📋 Reason flagged: {top_flag}"
+    template = ACTION_RESPONSES.get(action, ACTION_RESPONSES["informar"])
+    base_msg = template["message"]
+    escalate = template["escalate"]
 
-    return response
+    # 1. Sentiment-aware empathy prefix
+    opener = SENTIMENT_OPENERS.get(sentiment, "")
+
+    # 2. Intent-specific warm hint
+    hint = INTENT_HINTS.get(intent, "")
+
+    # 3. Compose final message
+    message = f"{opener}{base_msg}".strip()
+    if hint:
+        message = f"{message} {hint}"
+
+    # 4. Force-escalate if a risk flag mentions fraud/anomaly/foreign/big-jump
+    if any(any(k in flag.lower() for k in ESCALATE_FLAG_KEYWORDS) for flag in risk_flags):
+        escalate = True
+
+    return {
+        "message":  message,
+        "escalate": escalate,
+        "hint":     hint,
+    }
+
+
+# ── Standalone test ──────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("=== Responder Test ===\n")
+    cases = [
+        ("informar",                 "consulta_saldo",             "neutral",          []),
+        ("procesar_solicitud",       "transferencia",              "neutral",          []),
+        ("retener_cliente_urgente",  "cancelar_cuenta",            "negativo_urgente", []),
+        ("escalar_agente",           "fraude_cargo_no_reconocido", "negativo_urgente", ["fraud_alert"]),
+        ("oferta_producto",          "solicitar_producto",         "positivo",         []),
+        ("resolver_problema",        "problema_tecnico",           "negativo_queja",   []),
+    ]
+    for action, intent, sentiment, flags in cases:
+        out = generate_response(action, intent, sentiment, flags)
+        print(f"action={action} intent={intent} sentiment={sentiment} → escalate={out['escalate']}")
+        print(f"  {out['message']}\n")
