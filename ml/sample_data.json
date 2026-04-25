@@ -1,0 +1,43 @@
+[
+  {"text": "What is my account balance?", "intent": "check_balance"},
+  {"text": "Show me my balance", "intent": "check_balance"},
+  {"text": "How much money do I have?", "intent": "check_balance"},
+  {"text": "What is my current balance?", "intent": "check_balance"},
+  {"text": "Can you tell me my balance?", "intent": "check_balance"},
+  {"text": "I want to check how much is in my account", "intent": "check_balance"},
+
+  {"text": "I want to transfer money to John", "intent": "transfer_money"},
+  {"text": "Send $200 to Maria", "intent": "transfer_money"},
+  {"text": "Make a payment to account 1234", "intent": "transfer_money"},
+  {"text": "Transfer 500 dollars to Carlos", "intent": "transfer_money"},
+  {"text": "I need to wire funds", "intent": "transfer_money"},
+  {"text": "Pay my friend from my account", "intent": "transfer_money"},
+
+  {"text": "Was there a suspicious transaction?", "intent": "fraud_alert"},
+  {"text": "I didn't make that purchase", "intent": "fraud_alert"},
+  {"text": "There's a charge I don't recognize", "intent": "fraud_alert"},
+  {"text": "Someone used my card without permission", "intent": "fraud_alert"},
+  {"text": "I see a weird transaction on my statement", "intent": "fraud_alert"},
+  {"text": "My card was used fraudulently", "intent": "fraud_alert"},
+
+  {"text": "What credit cards do you offer?", "intent": "product_inquiry"},
+  {"text": "Tell me about your savings account", "intent": "product_inquiry"},
+  {"text": "Do you have investment products?", "intent": "product_inquiry"},
+  {"text": "What kind of loans are available?", "intent": "product_inquiry"},
+  {"text": "I'm interested in your premium account", "intent": "product_inquiry"},
+  {"text": "Show me your financial products", "intent": "product_inquiry"},
+
+  {"text": "I need help with my account", "intent": "customer_support"},
+  {"text": "How do I change my password?", "intent": "customer_support"},
+  {"text": "Can I speak to an agent?", "intent": "customer_support"},
+  {"text": "I can't log into my account", "intent": "customer_support"},
+  {"text": "Please help me reset my PIN", "intent": "customer_support"},
+  {"text": "I need assistance urgently", "intent": "customer_support"},
+
+  {"text": "What are my recent transactions?", "intent": "transaction_history"},
+  {"text": "Show me my last 5 purchases", "intent": "transaction_history"},
+  {"text": "List my spending this month", "intent": "transaction_history"},
+  {"text": "Show me my transaction history", "intent": "transaction_history"},
+  {"text": "What did I buy last week?", "intent": "transaction_history"},
+  {"text": "Can I see my payment history?", "intent": "transaction_history"}
+]
