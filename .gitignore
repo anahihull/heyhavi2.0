@@ -5,6 +5,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 .env
+data/
 
 # ML artifacts (large files — commit selectively)
 *.pkl
